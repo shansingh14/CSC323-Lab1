@@ -73,7 +73,7 @@ def oracle():
     mt = MT19937(seed) 
     time.sleep(random.randint(5, 60)) 
     first_output = mt.extract_number()
-    base64_output = base64.b64encode(first_output.to_bytes(4, 'big')).decode()  # Encode in base64
+    base64_output = base64.b64encode(first_output.to_bytes(4, 'big')).decode()
     return base64_output
 
 result = test_mt_twister32()
